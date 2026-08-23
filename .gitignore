@@ -1,4 +1,5 @@
 1-run_menu.bat
+flutter-apk.lnk
 
 # Miscellaneous
 *.class
@@ -45,6 +46,8 @@ bugreport*.zip
 .pub/
 build/
 **/build/
+dist/
+**/dist/
 /coverage/
 
 # Android related
