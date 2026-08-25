@@ -17,7 +17,7 @@
 ### 准备环境
 
 - 安装 [Flutter SDK](https://docs.flutter.dev/get-started/install) (推荐 3.24+ / Dart 3.5+)
-- 配置 Android SDK / Xcode 开发环境
+- 配置 Android SDK 开发环境
 
 ### 本地运行
 
