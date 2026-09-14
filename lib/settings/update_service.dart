@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../utils/platform_utils.dart';
+
 abstract final class UpdateChecker {
   static const String primaryUrl =
       'https://raw.githubusercontent.com/hcllmsx/PolyFlixPlayer-Mobile/main/VERSION';
@@ -137,7 +139,13 @@ class ForceUpdateDialog extends StatelessWidget {
               Expanded(
                 child: OutlinedButton(
                   onPressed: () {
-                    SystemNavigator.pop();
+                    // SystemNavigator.pop() 只对 Android/iOS 有效（相当于 finish()），
+                    // Windows 上不会退出进程，桌面端需直接结束进程。
+                    if (isDesktopPlatform) {
+                      exit(0);
+                    } else {
+                      SystemNavigator.pop();
+                    }
                   },
                   child: const Text('退出软件'),
                 ),

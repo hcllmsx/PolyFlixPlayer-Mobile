@@ -3,11 +3,13 @@ library;
 
 import 'dart:io';
 
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:window_manager/window_manager.dart';
 
 import '../main.dart';
 import '../pflx/pflx.dart';
@@ -15,6 +17,7 @@ import '../player/player_page.dart';
 import '../settings/settings_page.dart';
 import '../settings/update_service.dart';
 import '../utils/native_file_helper.dart';
+import '../utils/platform_utils.dart';
 
 const Set<String> _kSupportedVideoExtensions = {
   'mp4', 'mkv', 'mov', 'avi', 'flv', 'wmv', 'webm', 'ts', 'm4v',
@@ -39,6 +42,13 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final List<_LibraryItem> _items = [];
   bool _scanning = false;
+
+  /// 是否有文件正被拖到窗口上方（用于显示投放提示层）。
+  bool _dropActive = false;
+
+  /// 是否接收拖放事件。进入播放页前必须关掉：DropTarget 被其他页面覆盖后
+  /// 仍会继续收到拖放事件，会和播放页自己的拖放目标互相抢占。
+  bool _dropEnabled = true;
 
   @override
   void initState() {
@@ -78,7 +88,11 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  Future<void> _pickFiles() async {
+  /// 选择视频文件。
+  ///
+  /// [autoOpen] 为 true 时（空列表页中央的"选择视频文件"入口），文件加入媒体库后
+  /// 立即打开第一个，省掉"添加完再点一次播放"的多余步骤。
+  Future<void> _pickFiles({bool autoOpen = false}) async {
     if (_scanning) return;
     setState(() => _scanning = true);
     try {
@@ -118,7 +132,12 @@ class _HomePageState extends State<HomePage> {
           .where((item) => existingPaths.add(item.path))
           .toList(growable: false);
       if (freshItems.isEmpty) {
-        _showTip('所选视频已在你的媒体库中。');
+        // 已在媒体库中：自动打开模式下仍然直接播放它，不重复添加。
+        if (autoOpen) {
+          _open(selections.first);
+        } else {
+          _showTip('所选视频已在你的媒体库中。');
+        }
         return;
       }
       setState(() => _items.insertAll(0, freshItems));
@@ -129,11 +148,38 @@ class _HomePageState extends State<HomePage> {
       } else {
         _showTip('已添加 ${freshItems.length} 个视频。');
       }
+      if (autoOpen) _open(selections.first);
     } catch (_) {
       if (mounted) _showTip('无法读取所选文件，请检查文件访问权限后重试。');
     } finally {
       if (mounted) setState(() => _scanning = false);
     }
+  }
+
+  /// 拖放打开：拖进窗口的文件立即播放。
+  void _openDroppedFile(String path) {
+    final name = path.replaceAll('\\', '/').split('/').last;
+    if (!_isVideoPath(path)) {
+      _showTip('仅支持视频文件：$name');
+      return;
+    }
+    _playPath(path, name);
+  }
+
+  /// 识别是否为 PFLX 产物后直接进入播放页（不写入媒体库）。
+  void _playPath(String path, String name) {
+    if (!mounted) return;
+    final info = scan(path);
+    final isPflx = info != null &&
+        info['payload_offset'] + info['payload_len'] <= info['file_size'];
+    _open(
+      _LibraryItem(
+        path: path,
+        name: name,
+        isPflx: isPflx,
+        info: isPflx ? info : null,
+      ),
+    );
   }
 
   Future<void> _export(_LibraryItem item) async {
@@ -219,8 +265,26 @@ class _HomePageState extends State<HomePage> {
     return result ?? _ExportResult.failure('导出被中断');
   }
 
-  void _open(_LibraryItem item) {
-    Navigator.of(context).push(
+  Future<void> _open(_LibraryItem item) async {
+    // 播放页也有拖放目标，进入前先关掉首页的，避免两者同时接收拖放事件。
+    setState(() => _dropEnabled = false);
+
+    // 桌面端：记下当前窗口尺寸。播放页可能按视频比例把窗口改小，回来时要还原。
+    // 还原刻意放在这里而不是播放页的退出流程里——改窗口尺寸会让引擎重新布局
+    // 重绘，若发生在 media_kit 渲染纹理释放之后会直接崩掉进程；等回到首页时
+    // 播放器已完全销毁，就没有这个问题了。
+    Size? sizeBefore;
+    if (isDesktopPlatform) {
+      try {
+        sizeBefore = await windowManager.getSize();
+      } catch (_) {
+        // 取不到就跳过还原，不影响播放。
+      }
+    }
+    if (!mounted) return;
+    windowFitAppliedInPlayer = false;
+
+    await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => PlayerPage(
           sourcePath: item.path,
@@ -229,6 +293,23 @@ class _HomePageState extends State<HomePage> {
         ),
       ),
     );
+
+    if (!mounted) return;
+    setState(() => _dropEnabled = true);
+
+    // 只有播放页确实按视频比例调过窗口才还原，否则会覆盖用户自己调整的尺寸。
+    if (sizeBefore != null && windowFitAppliedInPlayer) {
+      windowFitAppliedInPlayer = false;
+      // 等播放器渲染层完全从树中移除后再改窗口尺寸，
+      // 否则尺寸变化触发的重新合成可能访问已释放的 mpv 纹理。
+      await Future.delayed(const Duration(milliseconds: 200));
+      if (!mounted) return;
+      try {
+        await windowManager.setSize(sizeBefore);
+      } catch (_) {
+        // 还原失败不影响使用。
+      }
+    }
   }
 
   void _removeItem(_LibraryItem item) {
@@ -349,9 +430,9 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    final scaffold = Scaffold(
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _scanning ? null : _pickFiles,
+        onPressed: _scanning ? null : () => _pickFiles(),
         icon: _scanning
             ? const SizedBox(
                 width: 18,
@@ -359,7 +440,9 @@ class _HomePageState extends State<HomePage> {
                 child: CircularProgressIndicator(strokeWidth: 2.4),
               )
             : const Icon(Icons.add_rounded),
-        label: Text(_scanning ? '正在识别' : '添加文件'),
+        label: Text(
+          _scanning ? '正在识别' : (isDesktopPlatform ? '添加到列表' : '添加文件'),
+        ),
       ),
       body: _AmbientBackground(
         child: CustomScrollView(
@@ -394,7 +477,7 @@ class _HomePageState extends State<HomePage> {
                     const SizedBox(height: 16),
                   ],
                   if (_items.isEmpty)
-                    _EmptyLibrary(onPickFiles: _pickFiles)
+                    _EmptyLibrary(onPickFiles: () => _pickFiles(autoOpen: true))
                   else ...[
                     _SectionHeading(
                       title: '最近添加',
@@ -419,6 +502,29 @@ class _HomePageState extends State<HomePage> {
             ),
           ],
         ),
+      ),
+    );
+
+    if (!isDesktopPlatform) return scaffold;
+
+    // 桌面端支持把视频文件直接拖进窗口播放。
+    return DropTarget(
+      enable: _dropEnabled,
+      onDragEntered: (_) => setState(() => _dropActive = true),
+      onDragExited: (_) => setState(() => _dropActive = false),
+      onDragDone: (details) {
+        setState(() => _dropActive = false);
+        final paths = details.files
+            .map((f) => f.path)
+            .where((p) => p.isNotEmpty)
+            .toList();
+        if (paths.isNotEmpty) _openDroppedFile(paths.first);
+      },
+      child: Stack(
+        children: [
+          scaffold,
+          if (_dropActive) const _DropHintOverlay(),
+        ],
       ),
     );
   }
@@ -448,6 +554,48 @@ class _LibraryItem {
     } on FileSystemException {
       return 0;
     }
+  }
+}
+
+/// 拖拽文件悬停在窗口上方时的投放提示层。
+class _DropHintOverlay extends StatelessWidget {
+  const _DropHintOverlay();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: ColoredBox(
+          color: theme.scaffoldBackgroundColor.withValues(alpha: .86),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.file_download_outlined,
+                size: 64,
+                color: scheme.primary,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                '松开即可播放',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                  color: scheme.onSurface,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '支持拖入单个视频文件，PFLX 产物会自动识别',
+                style: TextStyle(color: scheme.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 

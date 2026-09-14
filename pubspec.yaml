@@ -43,6 +43,9 @@ dependencies:
   file_picker: ^12.0.0
   shared_preferences: ^2.5.5
   url_launcher: ^6.3.1
+  media_kit_libs_windows_video: ^1.0.11
+  desktop_drop: ^0.8.4
+  window_manager: ^0.5.2
 
 dev_dependencies:
   flutter_test:

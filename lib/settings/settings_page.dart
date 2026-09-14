@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../main.dart';
 import '../utils/native_file_helper.dart';
+import '../utils/platform_utils.dart';
 import 'about_page.dart';
+import 'app_settings.dart';
 import 'update_service.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -135,6 +137,30 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
           ),
+          if (isDesktopPlatform) ...[
+            const SizedBox(height: 18),
+            const _SectionTitle(title: '播放'),
+            Card(
+              clipBehavior: Clip.antiAlias,
+              child: ListenableBuilder(
+                listenable: fitWindowToVideo,
+                builder: (context, _) {
+                  return SwitchListTile(
+                    secondary: Icon(
+                      Icons.aspect_ratio_rounded,
+                      color: scheme.primary,
+                    ),
+                    title: const Text('窗口适应视频比例'),
+                    subtitle: const Text(
+                      '打开视频后把播放窗口调整成该视频的画面比例，尽量减少黑边。',
+                    ),
+                    value: fitWindowToVideo.value,
+                    onChanged: (value) => setFitWindowToVideo(value),
+                  );
+                },
+              ),
+            ),
+          ],
           const SizedBox(height: 18),
           const _SectionTitle(title: '存储与空间'),
           Card(

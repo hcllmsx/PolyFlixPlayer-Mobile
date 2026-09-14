@@ -1,13 +1,26 @@
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'home/home_page.dart';
+import 'settings/app_settings.dart';
+import 'utils/platform_utils.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   try {
     MediaKit.ensureInitialized();
   } catch (_) {}
+  // 桌面端需要 window_manager 才能按视频比例调整窗口大小；移动端没有该实现。
+  if (isDesktopPlatform) {
+    try {
+      await windowManager.ensureInitialized();
+    } catch (_) {
+      // 初始化失败只是无法自动调整窗口，不影响其它功能。
+    }
+  }
+  // 设置在首帧之前读上来，否则界面会先按默认值渲染再跳变。
+  await loadAppSettings();
   runApp(const PolyFlixApp());
 }
 
@@ -19,6 +32,23 @@ abstract final class PolyFlixColors {
   static const softViolet = Color(0xFFE9E7FF);
   static const midnight = Color(0xFF12121C);
 }
+
+/// 基准字体族。
+///
+/// 不能用 'sans' —— 它不是任何平台的真实字体名（Android 上是 'sans-serif'，
+/// Windows 上不存在这个名字）。Flutter 查不到这个字体后只能走系统回退，
+/// 而回退链对个别简体字（例如"闭"）可能落到另一个字体上，表现为同一行里
+/// 有的字粗、有的字细。这里显式指定自带完整简体字形的字体。
+String? get _baseFontFamily =>
+    isWindowsPlatform ? 'Microsoft YaHei' : null;
+
+/// 基准字体缺字时的回退顺序：优先其它中文字体，避免落到西文字体上。
+const List<String> _fontFallback = <String>[
+  'Microsoft YaHei',
+  'PingFang SC',
+  'Noto Sans CJK SC',
+  'Source Han Sans SC',
+];
 
 enum AppThemeMode { light, dark, system }
 
@@ -83,7 +113,8 @@ class PolyFlixApp extends StatelessWidget {
       useMaterial3: true,
       colorScheme: scheme,
       scaffoldBackgroundColor: const Color(0xFFF7F7FB),
-      fontFamily: 'sans',
+      fontFamily: _baseFontFamily,
+      fontFamilyFallback: _fontFallback,
       appBarTheme: const AppBarTheme(
         backgroundColor: Colors.transparent,
         foregroundColor: Color(0xFF1B1B25),
@@ -126,7 +157,8 @@ class PolyFlixApp extends StatelessWidget {
       useMaterial3: true,
       colorScheme: scheme,
       scaffoldBackgroundColor: PolyFlixColors.midnight,
-      fontFamily: 'sans',
+      fontFamily: _baseFontFamily,
+      fontFamilyFallback: _fontFallback,
       appBarTheme: const AppBarTheme(
         backgroundColor: Colors.transparent,
         foregroundColor: Color(0xFFE5E1EB),
