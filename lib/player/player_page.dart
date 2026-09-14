@@ -5,6 +5,8 @@
 ///   桌面端没有这些概念，改为鼠标移动显隐 + 键盘快捷键，控制条常驻。
 /// - 桌面端去掉画面中央的大号播放/进退按钮，改为底部控制条上的音量、
 ///   音轨、字幕按钮，并提供拖放换片。
+/// - 音轨/字幕的选择入口两端不同：桌面端用控制条上的弹出菜单，移动端
+///   用控制条按钮唤起底部弹窗（与倍速选择同一套交互）。
 /// 核心播放逻辑（media_kit、PFLX 流式播放、进度/倍速）两端完全共用。
 library;
 
@@ -759,6 +761,8 @@ class _PlayerPageState extends State<PlayerPage> {
           duration: _duration,
           speed: _speed,
           desktopControls: isDesktopPlatform ? _buildDesktopTrackControls() : null,
+          mobileTrackControls:
+              isMobilePlatform ? _buildMobileTrackControls() : null,
           onPlayPause: _togglePlayback,
           onSpeedTap: () => _showSpeedSheet(),
           onToggleOrientation: _toggleOrientation,
@@ -820,6 +824,87 @@ class _PlayerPageState extends State<PlayerPage> {
         ],
       ),
     );
+  }
+
+  /// 移动端控制条右侧附加区：音轨 + 字幕两个入口，唤起底部弹窗。
+  ///
+  /// 移动端没有鼠标悬停，PopupMenuButton 在触屏上的命中区域与观感都不理想，
+  /// 所以不复用桌面端的弹出菜单，改走与倍速一致的 bottom sheet。
+  Widget _buildMobileTrackControls() {
+    final audioTracks = _audioTracks;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          onPressed: audioTracks.isEmpty ? null : _showAudioSheet,
+          tooltip: audioTracks.isEmpty ? '该视频没有可选音轨' : '音轨',
+          icon: Icon(
+            Icons.graphic_eq_rounded,
+            color: audioTracks.isEmpty
+                ? Colors.white.withValues(alpha: .35)
+                : Colors.white,
+          ),
+        ),
+        IconButton(
+          onPressed: _showSubtitleSheet,
+          tooltip: '字幕',
+          icon: const Icon(Icons.subtitles_outlined, color: Colors.white),
+        ),
+      ],
+    );
+  }
+
+  /// 底部弹窗：选择音轨。返回选中的轨道 id，取消返回 null。
+  Future<void> _showAudioSheet() async {
+    setState(() => _controlsVisible = true);
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF202027),
+      showDragHandle: true,
+      builder: (context) => _TrackSelectionSheet(
+        title: '音轨',
+        subtitle: '选择要使用的音频轨道。',
+        options: [
+          for (final t in _audioTracks)
+            _TrackOption(
+              id: t.id,
+              label: _audioLabel(t),
+              selected: t.id == _activeAudioId,
+            ),
+        ],
+      ),
+    );
+    if (selected != null) await _selectAudio(selected);
+  }
+
+  /// 底部弹窗：选择字幕（顶部固定有"关闭字幕"项）。返回轨道 id，取消返回 null。
+  Future<void> _showSubtitleSheet() async {
+    setState(() => _controlsVisible = true);
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF202027),
+      showDragHandle: true,
+      builder: (context) => _TrackSelectionSheet(
+        title: '字幕',
+        subtitle: '选择要显示的字幕轨道。',
+        options: [
+          _TrackOption(
+            id: _kSubtitlesOff,
+            label: '关闭字幕',
+            selected: _activeSubtitleId == null,
+          ),
+          for (final t in _subtitleTracks)
+            _TrackOption(
+              id: t.id,
+              label: _subtitleLabel(t),
+              selected: t.id == _activeSubtitleId,
+            ),
+        ],
+        footerNote:
+            _subtitleTracks.isEmpty ? '该视频没有内嵌字幕' : null,
+      ),
+    );
+    if (selected != null) await _selectSubtitle(selected);
   }
 
   /// 桌面端控制条右侧附加区：音量滑块 + 音轨 + 字幕。
@@ -1283,6 +1368,7 @@ class _PlayerBottomControls extends StatelessWidget {
     required this.onScrubUpdate,
     required this.onScrubEnd,
     this.desktopControls,
+    this.mobileTrackControls,
   });
 
   final bool visible;
@@ -1301,6 +1387,9 @@ class _PlayerBottomControls extends StatelessWidget {
 
   /// 桌面端附加控件（音量/音轨/字幕），移动端为 null。
   final Widget? desktopControls;
+
+  /// 移动端附加控件（音轨/字幕入口），桌面端为 null。
+  final Widget? mobileTrackControls;
 
   @override
   Widget build(BuildContext context) {
@@ -1373,6 +1462,7 @@ class _PlayerBottomControls extends StatelessWidget {
                         ),
                         const Spacer(),
                         ?desktopControls,
+                        ?mobileTrackControls,
                         TextButton(
                           onPressed: onSpeedTap,
                           style: TextButton.styleFrom(
@@ -1496,6 +1586,128 @@ class _SpeedOption extends StatelessWidget {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 底部弹窗里的一个轨道选项。
+class _TrackOption {
+  const _TrackOption({
+    required this.id,
+    required this.label,
+    required this.selected,
+  });
+
+  final String id;
+  final String label;
+  final bool selected;
+}
+
+/// 音轨/字幕选择的底部弹窗（移动端）。
+///
+/// 视觉与 [_SpeedSheet] 保持同一套：深色面板、标题 + 说明、内容项自绘。
+/// 选中项用强调色高亮并带勾选标记，与桌面端弹出菜单的勾选语义一致。
+class _TrackSelectionSheet extends StatelessWidget {
+  const _TrackSelectionSheet({
+    required this.title,
+    required this.subtitle,
+    required this.options,
+    this.footerNote,
+  });
+
+  final String title;
+  final String subtitle;
+  final List<_TrackOption> options;
+
+  /// 底部的灰色说明文字（如"该视频没有内嵌字幕"），null 表示不显示。
+  final String? footerNote;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 21,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              subtitle,
+              style: const TextStyle(color: Color(0xFFCBC7D2)),
+            ),
+            const SizedBox(height: 8),
+            for (final option in options)
+              _TrackOptionTile(
+                option: option,
+                onTap: () => Navigator.of(context).pop(option.id),
+              ),
+            if (footerNote != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                footerNote!,
+                style: const TextStyle(color: Color(0xFF8D8A96), fontSize: 13),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 音轨/字幕弹窗里的单行选项。
+class _TrackOptionTile extends StatelessWidget {
+  const _TrackOptionTile({required this.option, required this.onTap});
+
+  final _TrackOption option;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = option.selected;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+        child: Row(
+          children: [
+            // 与桌面端 _trackMenuItem 相同的固定宽度勾选位，保证列表左对齐。
+            SizedBox(
+              width: 26,
+              child: selected
+                  ? const Icon(
+                      Icons.check_rounded,
+                      size: 18,
+                      color: Color(0xFFC4BEFF),
+                    )
+                  : null,
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                option.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: selected ? const Color(0xFFC4BEFF) : Colors.white,
+                  fontSize: 14,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
