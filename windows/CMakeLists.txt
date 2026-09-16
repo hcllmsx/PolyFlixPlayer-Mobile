@@ -65,9 +65,12 @@ include(flutter/generated_plugins.cmake)
 set(BUILD_BUNDLE_DIR "$<TARGET_FILE_DIR:${BINARY_NAME}>")
 # Make the "install" step default, as it's required to run.
 set(CMAKE_VS_INCLUDE_INSTALL_TO_DEFAULT_BUILD 1)
-if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
-  set(CMAKE_INSTALL_PREFIX "${BUILD_BUNDLE_DIR}" CACHE PATH "..." FORCE)
-endif()
+# CMake >= 4 no longer sets CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT in
+# project(), so the original "if (...INITIALIZED_TO_DEFAULT)" guard never
+# fires and the prefix falls back to C:/Program Files/<project>, making the
+# INSTALL step fail without admin rights. Force it unconditionally instead;
+# BUILD_BUNDLE_DIR is a generator expression, evaluated per-build.
+set(CMAKE_INSTALL_PREFIX "${BUILD_BUNDLE_DIR}" CACHE PATH "..." FORCE)
 
 set(INSTALL_BUNDLE_DATA_DIR "${CMAKE_INSTALL_PREFIX}/data")
 set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}")
